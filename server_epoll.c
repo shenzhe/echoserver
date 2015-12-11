@@ -5,6 +5,9 @@
 #include <netinet/in.h>
 #include <sys/epoll.h>
 #include <sys/time.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 
 //端口
 #define PORT  9548
@@ -12,14 +15,46 @@
 //最大连接数
 #define MAX_CONN 100
 
-#define BUFLEN 10
+#define BUFLEN 100
 char readBuf[BUFLEN];
+#define SENDLEN 120
 
 int epollfd;
 struct epoll_event eventList[MAX_CONN];
 
+
 static void acceptConn(int listenfd);
-static void recvData(int connfd);
+static void recvData(int connfd, int n);
+static void sendData(int connfd, int n);
+static void setNonBlocking(int connfd);
+static void closeAndRemove(int connfd, int n);
+
+void setNonBlocking(int connfd) 
+{
+      int opts;
+      opts=fcntl(connfd,F_GETFL);
+      if(opts<0)
+      {
+          perror("fcntl(connfd,GETFL)");
+          return;
+      }
+      opts = opts|O_NONBLOCK;
+      if(fcntl(connfd,F_SETFL,opts)<0)
+      {
+          perror("fcntl(connfd,SETFL,opts)");
+          return;
+      }
+ }
+
+static void closeAndRemove(int connfd, int n) 
+{
+    if(connfd > 0) 
+    {
+        epoll_ctl(epollfd, EPOLL_CTL_DEL, connfd, &eventList[n]);
+        printf("fd=%d closed=\n", connfd);
+        close(connfd);
+    }
+}
 
 int main()
 {
@@ -60,49 +95,66 @@ int main()
 	}
 
 	int timeout; //超时
-	struct epoll_event eventList[MAX_CONN];
 	int ret;
 	while(1)
 	{
-		timeout = 3000;
+            timeout = 3000;
 
-		int ret = epoll_wait(epollfd, eventList, MAX_CONN, timeout);
+            int ret = epoll_wait(epollfd, eventList, MAX_CONN, timeout);
 
-		if(ret < 0) 
-		{
-			printf("epoll wait error\n");
-			break;
-		}
-		else if(ret == 0)
-		{
-			printf("timeout\n");
-			continue;
-		}
+            if(ret < 0) 
+            {
+                    printf("epoll wait error\n");
+                    break;
+            }
+            else if(ret == 0)
+            {
+                    //printf("timeout\n");
+                    continue;
+            }
 
-		int n = 0;
+            int n = 0;
 
-		for(n=0; n<ret; n++)
-		{
-			if((eventList[n].events & EPOLLERR) ||
-					(eventList[n].events & EPOLLHUP) ||
-					!(eventList[n].events & EPOLLIN))
-			{
-				printf("epoll error\n");
-				close(eventList[n].data.fd);
-				return -1;
-			}
+            for(n=0; n<ret; n++)
+            {
+                printf("1 event=%d\n", eventList[n].events);
+//                if((eventList[n].events & EPOLLERR) ||
+//                                (eventList[n].events & EPOLLHUP) ||
+//                                !(eventList[n].events & EPOLLIN)||
+//                                !(eventList[n].events & EPOLLOUT))
+//                {
+//                    close(eventList[n].data.fd);
+//
+//                    printf("2 event=%d\n", EPOLLERR);
+//                    printf("3 event=%d\n", EPOLLHUP);
+//                    printf("4 event=%d\n", EPOLLIN);
+//                    printf("5 event=%d\n", EPOLLRDHUP);
+//                    if(eventList[n].events & EPOLLRDHUP) {
+//                       epoll_ctl(epollfd, EPOLL_CTL_DEL, eventList[n].data.fd, &eventList[n]);
+//                       printf("fd=%d closed====\n", eventList[n].data.fd);
+//                       continue;
+//                    }      
+//                    printf("epoll error\n");
+//                    return -1;
+//                }
 
-			if(eventList[n].data.fd == listenfd)
-			{   //新连接
-				acceptConn(listenfd);
-			}
-			else //收到数据 
-			{
-				recvData(eventList[n].data.fd);
-			}
-		}
-
-
+                if(eventList[n].data.fd == listenfd)
+                {   //新连接
+                    acceptConn(listenfd);
+                }
+                else if(eventList[n].events & EPOLLIN) //收到数据 
+                {
+                        printf("6 event=%d\n", eventList[n].events);
+                        printf("7 event=%d\n", EPOLLIN);
+                        recvData(eventList[n].data.fd, n);
+                }
+                else if (eventList[n].events & EPOLLOUT) //发送数据
+                {
+                    printf("8 event=%d\n", eventList[n].events);
+                    printf("9 event=%d\n", EPOLLOUT);
+                    sendData(eventList[n].data.fd, n);
+                }
+            }
 	}
 	close(epollfd);
 	close(listenfd);
@@ -127,23 +179,130 @@ void acceptConn(int listenfd)
 	{
 		printf("new conn, fd=%d\n", connfd);
 	}
-
+        
+        setNonBlocking(connfd);
 	struct epoll_event event;
 	event.data.fd = connfd;
 	event.events = EPOLLIN|EPOLLET;
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, connfd, &event);
 }
 
-void recvData(int connfd)
+void recvData(int connfd, int n)
 {
         printf("fd=%d has data\n", connfd);
 	int ret;
+        int offset = 0;
+        int readOk = 0;
 	memset(readBuf, 0, BUFLEN);
+        while (1) 
+        {
+            ret = recv(connfd, readBuf + offset, BUFLEN, 0);
+            printf("read from fd=%d, data=%s, len=%d\n", connfd,readBuf, ret);
 
-	ret = recv(connfd, readBuf, ret, 0);
-	printf("read from fd=%d, data=%s, len=%d\n", connfd,readBuf, ret);
+            if(ret < 0) 
+            {  //出错了
+                  if(errno == EAGAIN) 
+                  {
+                      // 由于是非阻塞的模式,所以当errno为EAGAIN时,表示当前缓冲区已无数据可读
+                      // 在这里就当作是该次事件已处理处.
+                       readOk = 1;
+                       break;
+                  } 
+                  else if (errno == ECONNRESET) 
+                  {
+                      closeAndRemove(connfd, n);
+                      break ;
+                  } 
+                  else if (errno == EINTR) 
+                  {
+                      continue;
+                  }
+                  else 
+                  {
+                      closeAndRemove(connfd, n);
+                      break ;
+                  }
+            }
+
+            if(0 == ret) 
+            { //close
+                closeAndRemove(connfd, n);
+                return;
+            }
+            offset += ret;
+        }
         
-	send(connfd, readBuf, ret, 0);
+        if(readOk) 
+        {
+            readBuf[offset] = "\0";
+            eventList[n].data.fd = connfd;
+            eventList[n].events = EPOLLOUT | EPOLLET;
+            epoll_ctl(epollfd, EPOLL_CTL_MOD, connfd, &eventList[n]);
+        }
+        
+        return;
+}
+
+void sendData(int connfd, int n)
+{
+    int ret;
+    int offset = 0;
+    int writeOk = 0;
+    printf("read len:%d\n", strlen(readBuf));
+    char sendBuf[SENDLEN] = "server:";
+    printf("send start len:%d\n", strlen(sendBuf));
+    strcat(sendBuf, readBuf);
+    printf("send cat len:%d\n", strlen(sendBuf));
+    while(1) 
+    {
+        ret = send(connfd, sendBuf + offset, strlen(sendBuf)-offset, 0);
+        printf("send to fd=%d, data=%s, len=%d\n", connfd, sendBuf, ret);
+        if(ret < 0)
+        {
+            if(errno == EAGAIN)
+            {
+                writeOk = 1;
+                break;
+            }
+            else if (errno == ECONNRESET)
+            {
+                closeAndRemove(connfd, n);
+                break;
+            }
+            else if (errno == EINTR)
+            {
+                continue;
+            }
+            else 
+            {
+                closeAndRemove(connfd, n);
+                break;
+            }
+        }
+        
+        if(ret == 0)
+        {
+            closeAndRemove(connfd, n);
+            break;
+        }
+        
+        offset += ret;
+        
+        if(offset == strlen(sendBuf)) {
+            writeOk = 1;
+            break;
+        }
+         
+    }
+    
+    if (writeOk)
+    {
+        eventList[n].data.fd = connfd;
+        eventList[n].events = EPOLLIN | EPOLLET;
+        epoll_ctl(epollfd, EPOLL_CTL_MOD, connfd, &eventList[n]);
+    }
+    
+    return;
 }
 
 
