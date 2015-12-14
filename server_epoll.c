@@ -1,33 +1,4 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <sys/epoll.h>
-#include <sys/time.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-
-//端口
-#define PORT  9548
-
-//最大连接数
-#define MAX_CONN 100
-
-#define BUFLEN 100
-char readBuf[BUFLEN];
-#define SENDLEN 120
-
-int epollfd;
-struct epoll_event eventList[MAX_CONN];
-
-
-static void acceptConn(int listenfd);
-static void recvData(int connfd, int n);
-static void sendData(int connfd, int n);
-static void setNonBlocking(int connfd);
-static void closeAndRemove(int connfd, int n);
+#include "server_epoll.h"
 
 void setNonBlocking(int connfd) 
 {
@@ -46,7 +17,7 @@ void setNonBlocking(int connfd)
       }
  }
 
-static void closeAndRemove(int connfd, int n) 
+void closeAndRemove(int connfd, int n) 
 {
     if(connfd > 0) 
     {
@@ -234,7 +205,6 @@ void recvData(int connfd, int n)
         
         if(readOk) 
         {
-            readBuf[offset] = "\0";
             eventList[n].data.fd = connfd;
             eventList[n].events = EPOLLOUT | EPOLLET;
             epoll_ctl(epollfd, EPOLL_CTL_MOD, connfd, &eventList[n]);
@@ -248,14 +218,14 @@ void sendData(int connfd, int n)
     int ret;
     int offset = 0;
     int writeOk = 0;
-    printf("read len:%d\n", strlen(readBuf));
+    printf("read len:%d\n", (int)strlen(readBuf));
     char sendBuf[SENDLEN] = "server:";
-    printf("send start len:%d\n", strlen(sendBuf));
+    printf("send start len:%d\n", (int)strlen(sendBuf));
     strcat(sendBuf, readBuf);
-    printf("send cat len:%d\n", strlen(sendBuf));
+    printf("send cat len:%d\n", (int)strlen(sendBuf));
     while(1) 
     {
-        ret = send(connfd, sendBuf + offset, strlen(sendBuf)-offset, 0);
+        ret = send(connfd, sendBuf + offset, (int)strlen(sendBuf)-offset, 0);
         printf("send to fd=%d, data=%s, len=%d\n", connfd, sendBuf, ret);
         if(ret < 0)
         {
