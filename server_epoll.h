@@ -41,6 +41,9 @@ char readBuf[BUFLEN];
 
 int epollfd;
 struct epoll_event eventList[MAX_CONN];
+char *welcome = "欢迎来到桶哥聊天室!!\n 你的id是:";
+
+int fds[MAX_CONN];
 
 
 void acceptConn(int listenfd);
@@ -48,6 +51,10 @@ void recvData(int connfd, int n);
 void sendData(int connfd, int n);
 void setNonBlocking(int connfd);
 void closeAndRemove(int connfd, int n);
+
+void addFd(int connfd);
+void removeFd(int connfd);
+void sendAll(char *data, int connfd, int flag);
 
 #ifdef __cplusplus
 }

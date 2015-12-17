@@ -24,6 +24,10 @@ void closeAndRemove(int connfd, int n)
         epoll_ctl(epollfd, EPOLL_CTL_DEL, connfd, &eventList[n]);
         printf("fd=%d closed=\n", connfd);
         close(connfd);
+        removeFd(connfd);
+        char w[100];
+        sprintf(w,"%d 离开了聊天室!\n", connfd);
+        sendAll(w, connfd, 1);
     }
 }
 
@@ -66,12 +70,12 @@ int main()
 	}
 
 	int timeout; //超时
-	int ret;
+        int ret;
 	while(1)
 	{
             timeout = 3000;
 
-            int ret = epoll_wait(epollfd, eventList, MAX_CONN, timeout);
+            ret = epoll_wait(epollfd, eventList, MAX_CONN, timeout);
 
             if(ret < 0) 
             {
@@ -156,6 +160,13 @@ void acceptConn(int listenfd)
 	event.data.fd = connfd;
 	event.events = EPOLLIN|EPOLLET;
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, connfd, &event);
+        addFd(connfd);
+        char s[100];
+        sprintf(s, "%s %d\n输入quit，退出聊天室\n", welcome, connfd);
+        send(connfd, s, strlen(s), 0);
+        char w[100];
+        sprintf(w, "欢迎 %d 来到聊到室\n", connfd);
+        sendAll(w, connfd, 1);
 }
 
 void recvData(int connfd, int n)
@@ -205,6 +216,10 @@ void recvData(int connfd, int n)
         
         if(readOk) 
         {
+            if(0 == strncasecmp(readBuf, "quit", 4)) { //退出
+                closeAndRemove(connfd, n);
+                return;
+            }
             eventList[n].data.fd = connfd;
             eventList[n].events = EPOLLOUT | EPOLLET;
             epoll_ctl(epollfd, EPOLL_CTL_MOD, connfd, &eventList[n]);
@@ -220,9 +235,11 @@ void sendData(int connfd, int n)
     int writeOk = 0;
     printf("read len:%d\n", (int)strlen(readBuf));
     char sendBuf[SENDLEN] = "server:";
-    printf("send start len:%d\n", (int)strlen(sendBuf));
-    strcat(sendBuf, readBuf);
-    printf("send cat len:%d\n", (int)strlen(sendBuf));
+//    printf("send start len:%d\n", (int)strlen(sendBuf));
+//    strcat(sendBuf, readBuf);
+//    printf("send cat len:%d\n", (int)strlen(sendBuf));
+    sprintf(sendBuf, "%d说:%s\n", connfd, readBuf);
+    sendAll(sendBuf, connfd, 1);
     while(1) 
     {
         ret = send(connfd, sendBuf + offset, (int)strlen(sendBuf)-offset, 0);
@@ -275,4 +292,41 @@ void sendData(int connfd, int n)
     return;
 }
 
+void addFd(int connfd)
+{
+    int i = 0;
+    for(i=0; i<MAX_CONN; i++) 
+    {
+        if(!fds[i]) {
+            fds[i] = connfd;
+            return;
+        }
+    }
+}
 
+void removeFd(int connfd)
+{
+    int i = 0;
+    for(i=0; i<MAX_CONN; i++) 
+    {
+        if(fds[i] == connfd) {
+            fds[i] = 0;
+            return;
+        }
+    }
+}
+
+void sendAll(char * data, int connfd, int flag)
+{
+    int i = 0;
+    for(i=0; i<MAX_CONN; i++) 
+    {
+        if(fds[i]) {
+            if(flag && connfd == fds[i]) {
+                continue;
+            }
+            printf("send to %d: %s=%d\n", fds[i], data, strlen(data));
+            send(fds[i], data, strlen(data), 0);
+        }
+    }
+}
